@@ -29,3 +29,21 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="User not found")
 
     return user
+
+
+
+import audioop
+import numpy as np
+
+
+def mulaw_to_float32_mulaw(audio_bytes):
+    pcm = audioop.ulaw2lin(audio_bytes, 2)
+
+    audio_np = np.frombuffer(
+        pcm,
+        dtype=np.int16
+    ).astype(np.float32)
+
+    audio_np /= 32768.0
+
+    return audio_np

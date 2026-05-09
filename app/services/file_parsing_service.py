@@ -175,7 +175,7 @@ def extract_text_from_file(file: UploadFile) -> ExtractionResult:
     content = file.file.read()
     ext = Path(file.filename).suffix.lower()
 
-    print(f"Extracting text from '{file.filename}' (size={len(content)} bytes, ext='{ext}')")
+    # print(f"Extracting text from '{file.filename}' (size={len(content)} bytes, ext='{ext}')")
 
     if ext not in SUPPORTED_EXTENSIONS:
         raise ValueError(

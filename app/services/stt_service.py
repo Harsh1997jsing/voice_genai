@@ -82,13 +82,26 @@ ELEVEN_API_KEY = settings.ELEVENLABS_API_KEY
 
 # NOTE: ElevenLabs STT does NOT support vad_silence_threshold_secs as a URL param.
 # VAD config must be passed as a JSON message after session_started.
+# STT_URL = (
+#     "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
+#     "?model_id=scribe_v2_realtime"
+#     "&audio_format=ulaw_8000"
+#     "&commit_strategy=vad"
+    
+# )
+
 STT_URL = (
     "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
     "?model_id=scribe_v2_realtime"
     "&audio_format=ulaw_8000"
+    "&language_code=en"
+    "&vad_threshold=0.5"
+    "&vad_silence_threshold_secs=0.5"
+    "&min_speech_duration_ms=250"
+    "&min_silence_duration_ms=300"
+    "&max_tokens_to_recompute=3"
     "&commit_strategy=vad"
 )
-
 
 async def open_stt():
     ws = await ws_connect(
