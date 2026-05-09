@@ -31,10 +31,6 @@ from app.services.rag_pipeline import stream_llm
 
 router = APIRouter()
 
-# =========================================================
-# AUDIO SETTINGS
-# =========================================================
-
 SAMPLE_RATE = 8000
 CHUNK_MS = 20
 
@@ -45,27 +41,16 @@ STT_BATCH_FRAMES = 2          # ✅ reduced STT websocket spam (was 1)
 
 SYSTEM_PROMPT = "I am NovaCare Health Insurance AI assistant."
 
-# =========================================================
-# SPECULATIVE RETRIEVAL SETTINGS
-# =========================================================
-
 SPECULATIVE_MIN_WORDS = 4
 SPECULATIVE_MIN_CHARS = 20
-SPECULATIVE_DEBOUNCE_SEC = 0.5   # ✅ slightly longer debounce (was 0.4)
-SPECULATIVE_WORD_OVERLAP = 0.70  # ✅ word overlap threshold (replaces SequenceMatcher)
+SPECULATIVE_DEBOUNCE_SEC = 0.5  
+SPECULATIVE_WORD_OVERLAP = 0.70  
 
-# =========================================================
-# VAD SETTINGS
-# =========================================================
 
 SILENCE_TIMEOUT = 0.7
-VAD_CHECK_EVERY = 5              # ✅ run Silero every 5 chunks, not every chunk
+VAD_CHECK_EVERY = 5             
 
 vad_model = load_silero_vad()
-
-# =========================================================
-# RETRIEVAL FILTERS
-# =========================================================
 
 LOW_VALUE_UTTERANCES = {
     "okay", "ok", "okay.", "ok.",
@@ -127,7 +112,7 @@ def extract_real_query(text: str) -> str:
 
 def is_similar_query(query_a: str, query_b: str) -> bool:
     """
-    ✅ Fast word-overlap check — replaces slow SequenceMatcher.
+    Fast word-overlap check — replaces slow SequenceMatcher.
     Returns True if >70% of words overlap between the two queries.
     Handles cases like:
       speculative: 'give me insurance plan details'
@@ -140,10 +125,6 @@ def is_similar_query(query_a: str, query_b: str) -> bool:
     overlap = len(words_a & words_b) / max(len(words_a), len(words_b), 1)
     return overlap >= SPECULATIVE_WORD_OVERLAP
 
-
-# =========================================================
-# AUDIO HELPERS
-# =========================================================
 
 def mulaw_to_float32(audio_bytes: bytes):
     pcm = audioop.ulaw2lin(audio_bytes, 2)
@@ -160,10 +141,6 @@ def detect_speech(audio_float32):
     )
     return len(speech) > 0
 
-
-# =========================================================
-# TTS KEEPALIVE
-# =========================================================
 
 async def tts_keepalive_loop(tts_ws_holder: dict, tts_state: dict):
     while tts_state.get("running", True):
@@ -182,16 +159,12 @@ async def tts_keepalive_loop(tts_ws_holder: dict, tts_state: dict):
             tts_ws_holder["ws"] = None
 
 
-# =========================================================
-# TRANSCRIPT HANDLER
-# =========================================================
-
 async def handle_transcripts(
     stt_ws,
     tts_ws_holder: dict,
     stt_control: dict,
     tts_state: dict,
-    vad_state: dict,           # ✅ shared VAD state from media loop
+    vad_state: dict,       
 ):
     speculative_task = None
     last_partial = ""
@@ -200,9 +173,6 @@ async def handle_transcripts(
 
     async for result in receive_transcript(stt_ws):
 
-        # =================================================
-        # PARTIAL TRANSCRIPT
-        # =================================================
 
         if result["type"] == "partial":
 
@@ -220,7 +190,7 @@ async def handle_transcripts(
             if partial_text == last_partial:
                 continue
 
-            # ✅ Filter 4: user is still speaking — skip speculative entirely
+            # Filter 4: user is still speaking — skip speculative entirely
             # No point embedding mid-sentence partials, they will be cancelled
             # if vad_state["speaking"]:
             #     continue
@@ -253,10 +223,6 @@ async def handle_transcripts(
             )
 
             continue
-
-        # =================================================
-        # FINAL TRANSCRIPT
-        # =================================================
 
         if result["type"] == "final":
 
@@ -291,9 +257,6 @@ async def handle_transcripts(
 
             try:
 
-                # =========================================
-                # SMART CONTEXT: 3-strategy retrieval
-                # =========================================
 
                 docs = None
                 query_for_retrieval = extract_real_query(user_text)
@@ -339,9 +302,6 @@ async def handle_transcripts(
                     f"stage=context_ready ms={retrieve_ms:.1f}"
                 )
 
-                # =========================================
-                # STREAM LLM
-                # =========================================
 
                 buffer = ""
                 first_flush_done = False
@@ -386,9 +346,6 @@ async def handle_transcripts(
                 last_speculative_result = None
 
 
-# =========================================================
-# MAIN WEBSOCKET
-# =========================================================
 
 @router.websocket("/ws/call")
 async def voice_call(websocket: WebSocket):
@@ -407,7 +364,7 @@ async def voice_call(websocket: WebSocket):
         "turn": 1,
     }
 
-    # ✅ shared VAD state dict — passed into handle_transcripts
+    # shared VAD state dict — passed into handle_transcripts
     vad_state = {"speaking": False}
 
     stt_task = None
@@ -417,14 +374,10 @@ async def voice_call(websocket: WebSocket):
     audio_buffer = bytearray()
     frame_count = 0
 
-    # ✅ VAD throttle counter — run Silero every 5 chunks, not every 20ms
     vad_counter = 0
 
     last_voice_time = time.perf_counter()
 
-    # =====================================================
-    # SEND AUDIO TO TWILIO
-    # =====================================================
 
     async def send_audio_to_twilio(audio_bytes: bytes):
         for i in range(0, len(audio_bytes), BYTES_PER_CHUNK):
@@ -441,9 +394,7 @@ async def voice_call(websocket: WebSocket):
                 return
             await asyncio.sleep(CHUNK_INTERVAL)
 
-    # =====================================================
-    # START TTS
-    # =====================================================
+ 
 
     async def start_tts_stream():
         nonlocal tts_pump_task
@@ -452,10 +403,6 @@ async def voice_call(websocket: WebSocket):
         tts_pump_task = asyncio.create_task(
             pump_audio(ws, send_audio_to_twilio)
         )
-
-    # =====================================================
-    # MAIN LOOP
-    # =====================================================
 
     try:
         while True:
@@ -471,10 +418,6 @@ async def voice_call(websocket: WebSocket):
             msg = json.loads(data["text"])
             event = msg.get("event")
 
-            # =============================================
-            # START
-            # =============================================
-
             if event == "start":
                 stream_sid = msg["start"]["streamSid"]
                 print(f"Call started: {stream_sid}")
@@ -484,14 +427,10 @@ async def voice_call(websocket: WebSocket):
                         tts_keepalive_loop(tts_ws_holder, tts_state)
                     )
 
-            # =============================================
-            # MEDIA
-            # =============================================
-
             elif event == "media":
                 raw_bytes = base64.b64decode(msg["media"]["payload"])
 
-                # ✅ VAD: only run Silero every VAD_CHECK_EVERY chunks
+                #  VAD: only run Silero every VAD_CHECK_EVERY chunks
                 # reduces CPU by ~80% vs running on every 20ms chunk
                 vad_counter += 1
 
@@ -508,7 +447,7 @@ async def voice_call(websocket: WebSocket):
                     last_voice_time = now
                     if not vad_state["speaking"]:
                         print("[VAD] Speech started")
-                    vad_state["speaking"] = True   # ✅ update shared dict
+                    vad_state["speaking"] = True   
 
                 else:
                     silence_duration = now - last_voice_time
@@ -520,8 +459,7 @@ async def voice_call(websocket: WebSocket):
                             f"[VAD] Speech ended "
                             f"after {silence_duration:.2f}s silence"
                         )
-                        vad_state["speaking"] = False  # ✅ update shared dict
-
+                        vad_state["speaking"] = False  
                 # Open STT on first media event
                 if stt_ws is None:
                     print("[STT] Opening connection")
@@ -532,14 +470,14 @@ async def voice_call(websocket: WebSocket):
                             tts_ws_holder,
                             stt_control,
                             tts_state,
-                            vad_state,    # ✅ pass shared VAD state
+                            vad_state,   
                         )
                     )
 
                 if stt_control["paused"]:
                     continue
 
-                # ✅ Batch audio frames before sending to STT
+                # Batch audio frames before sending to STT
                 # reduces WebSocket calls by 3x (was STT_BATCH_FRAMES=1)
                 audio_buffer.extend(raw_bytes)
                 frame_count += 1
@@ -552,10 +490,6 @@ async def voice_call(websocket: WebSocket):
                     finally:
                         audio_buffer.clear()
                         frame_count = 0
-
-            # =============================================
-            # STOP
-            # =============================================
 
             elif event == "stop":
                 print("Call stopped")

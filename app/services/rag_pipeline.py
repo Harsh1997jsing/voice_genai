@@ -1,15 +1,3 @@
-# from app.services.kb_service import search_kb
-# from app.services.llm_service import stream_llm
-
-
-# async def rag_stream(query: str, user_id: int):
-#     docs = search_kb(query, user_id)
-#     context = "\n".join(docs)
-
-#     async for chunk in stream_llm(query, context):
-#         yield chunk
-
-
 import time
 from app.services.kb_service import search_kb_async
 from app.services.llm_service import stream_llm
