@@ -19,3 +19,5 @@ python-multipart
 langchain-text-splitters
 pisilero-vad 
 torch
+cachetools
+structlog

@@ -4,6 +4,7 @@ from app.services.twilio_service import search_numbers, buy_number, get_countrie
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.phone_number import PhoneNumber
+from app.models.leads import Lead
 from app.db.database import get_db
 from app.services.twilio_service import buy_number, selected_number
 router = APIRouter(prefix="/number", tags=["Numbers"])
@@ -67,29 +68,44 @@ def get_bought_numbers(
     current_user: User = Depends(get_current_user)
 ):
     """Get all bought/owned numbers for current user"""
+
     bought_numbers = db.query(PhoneNumber).filter(
         PhoneNumber.user_id == current_user.id
     ).all()
-    
+
     return {
-        "total_bought": 3,
+        "total_bought": len(bought_numbers),
         "numbers": [
             {
-                "id": 1,
-                "number": +1234567890,
-                "created_at": "2024-01-01T12:00:00Z"
-            },
-            {
-                "id": 2,
-                "number": +1234567891,
-                "created_at": "2024-01-01T12:00:00Z"
-            },
-            {
-                "id": 3,
-                "number": +1234567892,
-                "created_at": "2024-01-01T12:00:00Z"
+                "id": num.id,
+                "number": num.number,
+                "created_at": num.created_at.isoformat() if num.created_at else None
             }
-            
-            # for num in bought_numbers
+            for num in bought_numbers
+        ]
+    }
+
+
+@router.get("/target_numbers")
+async def get_target_numbers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get all target numbers from leads table for current user"""
+
+   
+
+    target_numbers = db.query(Lead).filter(
+        Lead.id == current_user.id
+    ).all()
+
+    return {
+        "total_targets": len(target_numbers),
+        "numbers": [
+            {
+                "phone_number": num.phone_number,
+                "status": num.status
+            }
+            for num in target_numbers
         ]
     }

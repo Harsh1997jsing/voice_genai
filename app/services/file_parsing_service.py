@@ -13,7 +13,7 @@ from fastapi import UploadFile
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xls", ".xlsx"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xls", ".xlsx", ".csv"}
 
 
 class ExtractionError(Exception):
@@ -204,6 +204,18 @@ def _extract_pptx(content: bytes, filename: str) -> ExtractionResult:
 
 
 def _extract_excel(content: bytes, filename: str) -> ExtractionResult:
+    if filename.lower().endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(content))
+        meta = FileMetadata(
+            filename=filename,
+            extension=".csv",
+            file_size_bytes=0,
+            has_tables=True,
+            extra={"row_count": len(df), "column_count": len(df.columns)},
+        )
+        lines = df.fillna("").astype(str).agg(" | ".join, axis=1).tolist()
+        return ExtractionResult(text="\n".join(lines), metadata=meta)
+
     xls = pd.ExcelFile(io.BytesIO(content))
     ext = Path(filename).suffix.lower()
 

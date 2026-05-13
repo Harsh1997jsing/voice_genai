@@ -31,7 +31,7 @@ def add_data( files: UploadFile = File(... ), user_id: int= Depends(get_current_
 
 
 
-@router.post("/search", response_model=KBSearchResponse)
-def search(payload: KBSearchRequest):
-    results = search_kb(payload.query, payload.top_k)
-    return {"results": results}
+# @router.post("/search", response_model=KBSearchResponse)
+# def search(payload: KBSearchRequest):
+#     results = search_kb(payload.query, payload.top_k)
+#     return {"results": results}

@@ -5,11 +5,12 @@ import asyncio
 
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
+from app.core.llm_client import OpenAIClient, OpenAIEmbeddingClient
  
 LLM_MODEL       = "gpt-4o-mini"
 LLM_MAX_TOKENS  = 80      # 1-2 sentences max — this is a voice call
 LLM_TEMPERATURE = 0.2     # low = faster + deterministic
- 
+
  
 SYSTEM_PROMPT_BASE = """\
 You are Nova, a NovaCare Health Insurance voice assistant on a live phone call.
@@ -24,14 +25,17 @@ STRICT RULES:
 7. Speak naturally, as a human agent would on a phone call."""
  
  
-def build_messages(query: str, context: str) -> list:
+def build_messages(query: str, context: str, dynamic_system_prompt: str | None = None) -> list:
     """
     Build the messages array for the LLM.
     System prompt carries context + rules.
     User message is the clean query only.
     """
+
+    dynamic_system_prompt = dynamic_system_prompt['text']
+    
     system_content = (
-        f"{SYSTEM_PROMPT_BASE}\n\n"
+        f"{dynamic_system_prompt}\n\n"
         f"--- CONTEXT START ---\n"
         f"{context}\n"
         f"--- CONTEXT END ---"
@@ -46,7 +50,9 @@ def build_messages(query: str, context: str) -> list:
 async def stream_llm(
     query: str,
     context: str,
-    trace_id: str = "na"
+    trace_id: str = "na",
+    user_id: int = 1,
+    dynamic_system_prompt: str | None = None
 ):
     """
     Stream LLM response token by token.
@@ -61,11 +67,12 @@ async def stream_llm(
     t0 = time.perf_counter()
  
     first_token_logged = False
+    print(dynamic_system_prompt)
  
     try:
         stream = await client.chat.completions.create(
             model=LLM_MODEL,
-            messages=build_messages(query, context),
+            messages=build_messages(query=query, context=context , dynamic_system_prompt=dynamic_system_prompt),
             # max_tokens=LLM_MAX_TOKENS,
             temperature=LLM_TEMPERATURE,
             stream=True,

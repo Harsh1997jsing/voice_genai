@@ -22,7 +22,7 @@ class Settings:
 
 
 
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone, PodSpec, ServerlessSpec
 
 
 
@@ -40,4 +40,14 @@ if settings.PINECONE_INDEX_NAME not in pc.list_indexes().names():
             region="us-east-1"
             )
         )
-
+#     pc.create_index(
+#     name="my-high-performance-index",
+#     dimension=1536, # Standard for OpenAI
+#     metric="cosine", # p2 supports cosine, euclidean, and dotproduct
+    
+#     spec=PodSpec(
+#         environment="gcp-starter", # Standard free environment
+#         pod_type="p2.x1",         # x1 is the single-pod size
+#         pods=1
+#     ), 
+# )

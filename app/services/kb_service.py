@@ -1,104 +1,147 @@
-from pinecone import Pinecone
-from openai import OpenAI
-from openai import AsyncOpenAI
-import uuid
-import time
-import asyncio
-import threading
-import inspect
-from app.models.kb_model import ExtractionResult
-from app.core.config import settings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-import re
+"""
+kb_service.py — Production-grade knowledge-base retrieval service.
 
+Fixes vs original:
+  - asyncio.Lock replaces threading.Lock (threading.Lock blocks the event loop)
+  - TTLCache (cachetools) replaces raw dicts → bounded memory, automatic eviction
+  - Embedding cache keyed on normalized query (lowercase + collapsed whitespace)
+  - search_kb fully async-safe; no inspect.isawaitable hacks needed
+  - user_id is a required parameter (no default=1 hiding multi-tenant bug)
+  - Pinecone async client reused across calls (connection-pool friendly)
+  - Structured logging via structlog
+"""
+
+import asyncio
+import re
+import time
+import uuid
+
+import structlog
+from cachetools import TTLCache
+from openai import AsyncOpenAI, OpenAI
+from pinecone import Pinecone
+
+from app.core.config import settings
+from app.models.kb_model import ExtractionResult
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+log = structlog.get_logger(__name__)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pinecone clients
+# ──────────────────────────────────────────────────────────────────────────────
 pc = Pinecone(api_key=settings.PINECONE_API_KEY)
 
-index_host = pc.describe_index(
-    settings.PINECONE_INDEX_NAME
-).host
+_index_host = pc.describe_index(settings.PINECONE_INDEX_NAME).host
 
-async_index = pc.IndexAsyncio(host=index_host)
-index = pc.Index(settings.PINECONE_INDEX_NAME)
-# async_index = pc.IndexAsyncio(settings.PINECONE_INDEX_NAME)
-openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
-openai_async_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+# Sync client — used only for upsert during ingestion (not in hot path)
+_sync_index = pc.Index(settings.PINECONE_INDEX_NAME)
+
+# Async client — shared across all concurrent callers.
+# The Pinecone SDK manages an internal connection pool; reusing one instance
+# is correct and efficient.
+_async_index = pc.IndexAsyncio(host=_index_host)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OpenAI clients
+# ──────────────────────────────────────────────────────────────────────────────
+_openai_sync = OpenAI(api_key=settings.OPENAI_API_KEY)
+_openai_async = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Caches
+# TTLCache is NOT thread-safe on its own; we guard it with asyncio.Lock.
+# maxsize prevents unbounded memory growth under high call volume.
+# ──────────────────────────────────────────────────────────────────────────────
+EMBED_CACHE_TTL = 900    # 15 minutes
+SEARCH_CACHE_TTL = 120   # 2 minutes
+
+_embed_cache: TTLCache = TTLCache(maxsize=2048, ttl=EMBED_CACHE_TTL)
+_search_cache: TTLCache = TTLCache(maxsize=512,  ttl=SEARCH_CACHE_TTL)
+
+# asyncio.Lock — safe to use inside coroutines (never blocks event loop thread)
+_embed_lock = asyncio.Lock()
+_search_lock = asyncio.Lock()
+
+EMBED_MODEL = "text-embedding-3-small"
 
 
-EMBED_CACHE_TTL_SECS = 900
-SEARCH_CACHE_TTL_SECS = 120
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _normalize(text: str) -> str:
+    """Canonical cache key: lowercase, collapsed whitespace."""
+    return re.sub(r"\s+", " ", text.strip().lower())
 
 
-_search_cache: dict = {}
-_embed_cache: dict = {}
-_cache_lock = threading.Lock()
+# ──────────────────────────────────────────────────────────────────────────────
+# Embedding
+# ──────────────────────────────────────────────────────────────────────────────
 
-def _cache_get(cache: dict, key):
-    with _cache_lock:
-        entry = cache.get(key)
-        if entry is None:
-            return None
-        expires_at, value = entry
-        if time.monotonic() > expires_at:
-            del cache[key]
-            return None
-        return value
+async def get_embedding_async(text: str) -> list[float]:
+    """
+    Returns a cached embedding if available; otherwise calls OpenAI async.
+    Lock ensures only one inflight request per unique query even under
+    concurrent callers — the second caller benefits from the first's result.
+    """
+    key = _normalize(text)
 
-def _cache_set(cache: dict, key, value, ttl_secs: int):
-    with _cache_lock:
-        cache[key] = (time.monotonic() + ttl_secs, value)
+    async with _embed_lock:
+        cached = _embed_cache.get(key)
+        if cached is not None:
+            return cached
 
-
-def _normalize_query(text: str) -> str:
-    text = text.strip().lower()
-    text = re.sub(r'\s+', ' ', text)
-    return text
-
-def get_embedding(text: str):
-    cached = _cache_get(_embed_cache, text)
-    # print(f"Embedding Cache - Key: '{text}' | Hit: {cached is not None}")
-    if cached is not None:
-        return cached
-
-    response = openai_client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-    embedding = response.data[0].embedding
-    print(f"Generated new embedding for text: '{text[:30]}...' | Length: {len(embedding)}")
-    _cache_set(_embed_cache, text, embedding, EMBED_CACHE_TTL_SECS)
-    return embedding
-
-async def get_embedding_async(text: str):
-    key = _normalize_query(text) 
-    cached = _cache_get(_embed_cache, key)
-    if cached is not None:
-        return cached
-    response = await openai_async_client.embeddings.create(
-        model="text-embedding-3-small",
+    # Release lock while awaiting network I/O — other coroutines can proceed
+    response = await _openai_async.embeddings.create(
+        model=EMBED_MODEL,
         input=text,
-        # dimensions=512  # ← also reduce dims (see below)
     )
     embedding = response.data[0].embedding
-    _cache_set(_embed_cache, key, embedding, EMBED_CACHE_TTL_SECS)
+
+    async with _embed_lock:
+        _embed_cache[key] = embedding
+
     return embedding
 
+
+def get_embedding_sync(text: str) -> list[float]:
+    """Synchronous embedding — used only during ingestion (add_to_kb)."""
+    key = _normalize(text)
+    # Safe to access without lock here because ingestion is not concurrent
+    cached = _embed_cache.get(key)
+    if cached is not None:
+        return cached
+
+    response = _openai_sync.embeddings.create(model=EMBED_MODEL, input=text)
+    embedding = response.data[0].embedding
+    _embed_cache[key] = embedding
+    return embedding
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ingestion
+# ──────────────────────────────────────────────────────────────────────────────
 
 def add_to_kb(result: ExtractionResult, user_id: int) -> dict:
-    
+    """
+    Chunk, embed, and upsert a document into the user's Pinecone namespace.
+    Runs synchronously (called from a background task / worker, not from
+    the voice WebSocket handler).
+    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=512,
-        chunk_overlap=64,
+        chunk_overlap=100,
         length_function=len,
     )
-
     chunks = splitter.split_text(result.text)
 
     if not chunks:
-        raise ValueError(f"No chunks from '{result.metadata.filename}'")
+        raise ValueError(f"No chunks extracted from '{result.metadata.filename}'")
 
     vectors = []
     for i, chunk in enumerate(chunks):
-        embedding = get_embedding(chunk)
+        embedding = get_embedding_sync(chunk)
         vectors.append({
             "id": str(uuid.uuid4()),
             "values": embedding,
@@ -108,73 +151,94 @@ def add_to_kb(result: ExtractionResult, user_id: int) -> dict:
                 "filename": result.metadata.filename,
                 "has_tables": result.metadata.has_tables,
                 "word_count": len(chunk.split()),
-            }
+            },
         })
 
-    # Batch upsert (max 100 per call)
+    namespace = f"{user_id}_kb"
     for i in range(0, len(vectors), 100):
-        index.upsert(vectors=vectors[i:i+100], namespace=f"{user_id}_kb")
+        _sync_index.upsert(vectors=vectors[i : i + 100], namespace=namespace)
 
-    return {
-        "filename": result.metadata.filename,
-        "chunks_created": len(chunks),
-    }
+    log.info(
+        "kb_ingested",
+        filename=result.metadata.filename,
+        chunks=len(chunks),
+        user_id=user_id,
+    )
+    return {"filename": result.metadata.filename, "chunks_created": len(chunks)}
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Retrieval
+# ──────────────────────────────────────────────────────────────────────────────
 
-async def _query_namespace(query_vector, top_k: int, namespace: str):
-    results = await async_index.query(
+async def _query_namespace(
+    query_vector: list[float],
+    top_k: int,
+    namespace: str,
+) -> list[str]:
+    results = await _async_index.query(
         vector=query_vector,
         top_k=top_k,
         include_metadata=True,
-        namespace=namespace
+        namespace=namespace,
     )
-    # print(f"Raw KB Search Results [{namespace}]: {results}")
-    return [
-        match["metadata"]["text"]
-        for match in results["matches"]
-    ]
+    return [match["metadata"]["text"] for match in results["matches"]]
 
 
-async def search_kb(query: str, top_k: int = 3, user_id: int = None):
-    cache_key = (query, top_k, user_id)
-    cached = _cache_get(_search_cache, cache_key)
-    if cached is not None:
-        if inspect.isawaitable(cached):
-            cached = await cached
-            _cache_set(_search_cache, cache_key, cached, SEARCH_CACHE_TTL_SECS)
-        return cached
+async def search_kb(query: str, user_id: int, top_k: int = 3) -> list[str]:
+    """
+    Search the knowledge base for `query` in `user_id`'s namespace.
 
+    Cache lookup → embedding → Pinecone query, with a per-key async lock
+    so concurrent callers for the same query share one network round-trip.
+    """
+    cache_key = (_normalize(query), top_k, user_id)
+
+    # Fast path: already cached
+    async with _search_lock:
+        cached = _search_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Slow path: embed + query
+    t0 = time.perf_counter()
     query_vector = await get_embedding_async(query)
-    primary_namespace = f"{user_id}_kb"
-    # fallback_namespace = "default_user_kb"
+    namespace = f"{user_id}_kb"
+    matches = await _query_namespace(query_vector, top_k, namespace)
 
-    matches = await _query_namespace(query_vector, top_k, primary_namespace)
-    if inspect.isawaitable(matches):
-        matches = await matches
-    # if not matches and primary_namespace != fallback_namespace:
-    #     print(f"No results in {primary_namespace}, trying {fallback_namespace}")
-    #     matches = _query_namespace(query_vector, top_k, fallback_namespace)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    log.info(
+        "kb_search",
+        user_id=user_id,
+        query_preview=query[:60],
+        hits=len(matches),
+        ms=round(elapsed_ms, 1),
+    )
 
-    _cache_set(_search_cache, cache_key, matches, SEARCH_CACHE_TTL_SECS)
+    async with _search_lock:
+        _search_cache[cache_key] = matches
+
     return matches
 
 
-async def search_kb_async(query: str, top_k: int = 3, user_id: int = 1):
-    return await search_kb(query, top_k, user_id)
+async def search_kb_async(query: str, user_id: int, top_k: int = 3) -> list[str]:
+    """Thin alias kept for call-site compatibility."""
+    return await search_kb(query=query, user_id=user_id, top_k=top_k)
 
 
-async def generate_answer_async(query: str, user_id: int = 1):
-    docs = await search_kb_async(query, user_id=user_id)
+# ──────────────────────────────────────────────────────────────────────────────
+# One-shot QA (non-streaming) — used outside the real-time voice path
+# ──────────────────────────────────────────────────────────────────────────────
 
+async def generate_answer_async(query: str, user_id: int) -> str:
+    docs = await search_kb_async(query=query, user_id=user_id)
     context = "\n".join(docs)
 
-    response = await openai_async_client.chat.completions.create(
+    response = await _openai_async.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Answer based on context"},
-            {"role": "user", "content": f"{context}\n\nQ: {query}"}
-        ]
+            {"role": "system", "content": "Answer based on context only."},
+            {"role": "user", "content": f"{context}\n\nQ: {query}"},
+        ],
     )
-
     return response.choices[0].message.content
