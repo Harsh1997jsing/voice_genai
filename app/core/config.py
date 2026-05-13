@@ -33,7 +33,7 @@ pc = Pinecone(api_key=settings.PINECONE_API_KEY)
 if settings.PINECONE_INDEX_NAME not in pc.list_indexes().names():
     pc.create_index(
         name=settings.PINECONE_INDEX_NAME,
-        dimension=1536,
+        dimension=512,
         metric="cosine",
         spec=ServerlessSpec(
             cloud="aws",

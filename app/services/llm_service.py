@@ -25,7 +25,7 @@ STRICT RULES:
 7. Speak naturally, as a human agent would on a phone call."""
  
  
-def build_messages(query: str, context: str, dynamic_system_prompt: str | None = None) -> list:
+def build_messages(query: str, context: str, dynamic_system_prompt: dict | None = None) -> list:
     """
     Build the messages array for the LLM.
     System prompt carries context + rules.
@@ -52,7 +52,7 @@ async def stream_llm(
     context: str,
     trace_id: str = "na",
     user_id: int = 1,
-    dynamic_system_prompt: str | None = None
+    dynamic_system_prompt: dict | None = None
 ):
     """
     Stream LLM response token by token.

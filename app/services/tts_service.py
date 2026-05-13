@@ -35,7 +35,7 @@ ELEVENLABS_WS_URL = (
 # Connection
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def open_elevenlabs_stream(system_prompt: str = ""):
+async def open_elevenlabs_stream(system_prompt: dict = ""):
     """
     Open a streaming TTS WebSocket connection and send the BOS (begin-of-stream)
     initialisation frame.
