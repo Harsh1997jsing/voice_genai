@@ -1,9 +1,5 @@
-from twilio.rest import Client
-from app.core.config import settings
 
-client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-
-# print(client.api.accounts(settings.TWILIO_ACCOUNT_SID).fetch().status)
+from app.core.twilio_clinet import client
 
 def transfer_to_human(call_sid):
     client.calls(call_sid).update(

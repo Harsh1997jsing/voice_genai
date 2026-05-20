@@ -6,12 +6,24 @@ from app.api.kb import router as kb_router
 from app.api.calling_router import router as calling_router
 from app.api.auth import router as auth_router
 from app.api.upload import router as upload_router
+from app.api.customer_profile import router as profile_router
 from fastapi.responses import JSONResponse
 from app.core.exceptions import AppException
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="calling genai", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup: pre-warm embedding cache for common queries
+    from app.services.kb_service import warm_embedding_cache
+    await warm_embedding_cache()
+    yield
+
+app = FastAPI(title="calling genai", version="0.1.0", lifespan=lifespan)
+
 
 from app.db.database import Base, engine
+
 
 Base.metadata.create_all(bind=engine)
 
@@ -39,6 +51,7 @@ app.include_router(kb_router)
 app.include_router(calling_router)
 app.include_router(auth_router)
 app.include_router(upload_router)
+app.include_router(profile_router)
 
 @app.get("/")
 def root():

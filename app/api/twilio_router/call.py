@@ -40,11 +40,12 @@ async def call_single(                              # FIX 1: must be async
             detail="No prompt found for this user. Upload company PDF first.",
         )
 
-    twilio_number = (
-        db.query(PhoneNumber)
-        .filter(PhoneNumber.user_id == current_user.id)
-        .first()
-    )
+    # twilio_number = (
+    #     db.query(PhoneNumber)
+    #     .filter(PhoneNumber.user_id == current_user.id)
+    #     .first()
+    # )
+    twilio_number = "+16814146368"
     if not twilio_number:
         raise HTTPException(
             status_code=400,
@@ -61,7 +62,7 @@ async def call_single(                              # FIX 1: must be async
         user_id=current_user.id,
         one_liner=one_liner,
         system_prompt=system_prompt,
-        from_number=twilio_number.number,
+        from_number="+16814146368",
     )
     return {"call_sid": sid}
 

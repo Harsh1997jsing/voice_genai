@@ -19,6 +19,7 @@ from app.services.calling.constants import (
     STT_BATCH_FRAMES,
     SYSTEM_PROMPT,
     VAD_CHECK_EVERY,
+    call_state,
 )
 from app.services.calling.transcript_flow import handle_transcripts, tts_keepalive_loop
 from app.services.calling.vad_audio import detect_speech_async, mulaw_to_float32
@@ -102,8 +103,11 @@ async def handle_voice_call(websocket: WebSocket):
         tts_pump_task = task
 
     async def send_audio_to_twilio(audio_bytes: bytes):
-        for i in range(0, len(audio_bytes), BYTES_PER_CHUNK):
-            chunk = audio_bytes[i : i + BYTES_PER_CHUNK]
+        start = asyncio.get_event_loop().time()
+        chunks = [audio_bytes[i:i + BYTES_PER_CHUNK]
+                  for i in range(0, len(audio_bytes), BYTES_PER_CHUNK)]
+
+        for idx, chunk in enumerate(chunks):
             payload = base64.b64encode(chunk).decode("utf-8")
             try:
                 await websocket.send_text(json.dumps({
@@ -114,7 +118,12 @@ async def handle_voice_call(websocket: WebSocket):
             except Exception as e:
                 call_log.warning("twilio_send_failed", error=str(e))
                 return
-            await asyncio.sleep(CHUNK_INTERVAL)
+
+            # Time-anchored pacing — prevents drift accumulation
+            target_time = start + (idx + 1) * CHUNK_INTERVAL
+            now = asyncio.get_event_loop().time()
+            if target_time > now:
+                await asyncio.sleep(target_time - now)
 
     async def start_tts_stream():
         nonlocal tts_pump_task
@@ -165,6 +174,10 @@ async def handle_voice_call(websocket: WebSocket):
                 call_log.warning("max_call_duration_reached")
                 break
 
+            if call_state.get("ending"):
+                call_log.info("call_ending_by_phrase")
+                break
+
             try:
                 data = await websocket.receive()
                 if data["type"] == "websocket.disconnect":
@@ -182,6 +195,8 @@ async def handle_voice_call(websocket: WebSocket):
 
             if event == "start":
                 stream_sid = msg["start"]["streamSid"]
+
+                call_sid   = msg["start"].get("callSid") 
                 call_log.info("call_started", stream_sid=stream_sid)
                 await start_tts_stream()
                 if tts_keepalive_task is None:
@@ -250,14 +265,16 @@ async def handle_voice_call(websocket: WebSocket):
                                 set_tts_pump_task,
                                 conversation_history,
                                 dynamic_system_prompt,
+                                call_sid=call_sid,
                             )
                         )
                     except Exception as e:
                         call_log.error("stt_open_failed", error=str(e))
 
-                if stt_control["paused"]:
-                    continue
-
+                # Always forward audio to STT even while paused
+                # to prevent the 20-second inactivity timeout (1008).
+                # Transcripts received during pause are harmless — 
+                # handle_transcripts won't act while tts_state["speaking"] is True.
                 audio_buffer.extend(raw_bytes)
                 frame_count += 1
                 if frame_count >= STT_BATCH_FRAMES:
@@ -265,6 +282,11 @@ async def handle_voice_call(websocket: WebSocket):
                         await send_audio(stt_ws, bytes(audio_buffer))
                     except Exception as e:
                         call_log.warning("stt_send_failed", error=str(e))
+                        # Dead STT connection — null it out so the
+                        # reconnect logic on line 231 triggers next frame.
+                        stt_ws = None
+                        if stt_task and not stt_task.done():
+                            stt_task.cancel()
                     finally:
                         audio_buffer.clear()
                         frame_count = 0

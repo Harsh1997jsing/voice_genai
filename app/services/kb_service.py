@@ -64,6 +64,7 @@ _embed_lock = asyncio.Lock()
 _search_lock = asyncio.Lock()
 
 EMBED_MODEL = "text-embedding-3-small"
+EMBED_DIM = 512
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -96,6 +97,7 @@ async def get_embedding_async(text: str) -> list[float]:
     response = await _openai_async.embeddings.create(
         model=EMBED_MODEL,
         input=text,
+        dimensions=EMBED_DIM,
     )
     embedding = response.data[0].embedding
 
@@ -113,7 +115,11 @@ def get_embedding_sync(text: str) -> list[float]:
     if cached is not None:
         return cached
 
-    response = _openai_sync.embeddings.create(model=EMBED_MODEL, input=text)
+    response = _openai_sync.embeddings.create(
+        model=EMBED_MODEL,
+        input=text,
+        dimensions=EMBED_DIM,
+    )
     embedding = response.data[0].embedding
     _embed_cache[key] = embedding
     return embedding
@@ -242,3 +248,29 @@ async def generate_answer_async(query: str, user_id: int) -> str:
         ],
     )
     return response.choices[0].message.content
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Embedding cache warm-up — call at startup to pre-populate common queries
+# ──────────────────────────────────────────────────────────────────────────────
+
+COMMON_QUERIES = [
+    "what plans do you offer",
+    "claim status",
+    "how to file a claim",
+    "renewal process",
+    "network hospitals",
+    "premium payment",
+    "cashless treatment",
+    "policy coverage",
+    "add family member",
+    "cancel policy",
+]
+
+
+async def warm_embedding_cache():
+    """Pre-populate embedding cache with common queries at app startup."""
+    tasks = [get_embedding_async(q) for q in COMMON_QUERIES]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    success = sum(1 for r in results if not isinstance(r, Exception))
+    log.info("embedding_cache_warmed", total=len(COMMON_QUERIES), success=success)

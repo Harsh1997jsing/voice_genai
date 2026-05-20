@@ -19,6 +19,7 @@ class Settings:
 
     ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
     PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+    ELEVENLABS_AGENT_ID: str = "agent_3601krk52znzet18mpgbxm0pzvqz"
 
 
 

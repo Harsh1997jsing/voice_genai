@@ -25,14 +25,24 @@ STRICT RULES:
 7. Speak naturally, as a human agent would on a phone call."""
  
  
-def build_messages(query: str, context: str, dynamic_system_prompt: dict | None = None) -> list:
+def build_messages(
+    query: str,
+    context: str,
+    dynamic_system_prompt: str | dict | None = None
+) -> list:
     """
     Build the messages array for the LLM.
     System prompt carries context + rules.
     User message is the clean query only.
     """
-
-    dynamic_system_prompt = dynamic_system_prompt['text']
+    if isinstance(dynamic_system_prompt, dict):
+        dynamic_system_prompt = str(dynamic_system_prompt.get("text", "")).strip()
+    elif dynamic_system_prompt is None:
+        dynamic_system_prompt = ""
+    else:
+        dynamic_system_prompt = str(dynamic_system_prompt).strip()
+    if not dynamic_system_prompt:
+        dynamic_system_prompt = SYSTEM_PROMPT_BASE
     
     system_content = (
         f"{dynamic_system_prompt}\n\n"
@@ -52,7 +62,7 @@ async def stream_llm(
     context: str,
     trace_id: str = "na",
     user_id: int = 1,
-    dynamic_system_prompt: dict | None = None
+    dynamic_system_prompt: str | dict | None = None
 ):
     """
     Stream LLM response token by token.
@@ -67,13 +77,11 @@ async def stream_llm(
     t0 = time.perf_counter()
  
     first_token_logged = False
-    print(dynamic_system_prompt)
- 
     try:
         stream = await client.chat.completions.create(
             model=LLM_MODEL,
             messages=build_messages(query=query, context=context , dynamic_system_prompt=dynamic_system_prompt),
-            # max_tokens=LLM_MAX_TOKENS,
+            max_tokens=100,
             temperature=LLM_TEMPERATURE,
             stream=True,
         )

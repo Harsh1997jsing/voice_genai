@@ -19,23 +19,47 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 
 
 @router.post("/excel")
-async def upload_excel(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    content = await file.read()
-    df = pd.read_excel(io.BytesIO(content))
+async def upload_excel(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user_id = Depends(get_current_user)
+):
+    try:
+        content = await file.read()
+        df = pd.read_excel(io.BytesIO(content))
 
-    numbers = df["phone"].dropna().tolist()
+        user_id = user_id.id if isinstance(user_id, User) else user_id
+        if user_id is None:
+            raise HTTPException(status_code=400, detail="User ID is required")
 
+        if "phone" not in df.columns:
+            return {"error": "Excel file must contain a 'phone' column"}
 
-    saved = []
-    for num in numbers:
-        lead = Lead(phone_number=str(num))
-        db.add(lead)
-        saved.append(str(num))
+        numbers = (
+            df["phone"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
 
-    db.commit()
-    db.close()
+        saved = []
 
-    return {"total_uploaded": len(saved)}
+        for num in numbers:
+            lead = Lead(phone_number=num, user_id=user_id, status="pending")
+            db.add(lead)
+            saved.append(num)
+
+        db.commit()
+
+        return {
+            "message": "Upload successful",
+            "total_uploaded": len(saved)
+        }
+
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
 
 
 @router.get("/stats")

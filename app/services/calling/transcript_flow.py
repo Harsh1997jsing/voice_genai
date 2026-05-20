@@ -70,6 +70,12 @@ async def handle_transcripts(
 
     async for result in receive_transcript(stt_ws):
         try:
+            # Audio is now forwarded to STT even while paused (to keep
+            # the WebSocket alive), so discard any transcripts that
+            # arrive during TTS playback.
+            if stt_control.get("paused"):
+                continue
+
             if result["type"] == "partial":
                 partial_text = result["text"].strip()
                 if is_low_value(partial_text) or not is_stable_transcript(partial_text) or partial_text == last_partial:
@@ -165,12 +171,6 @@ async def handle_transcripts(
                     first_flush_done = False
                     sent_first_chunk = False
 
-                    async with tts_lock:
-                        tts_ws = tts_ws_holder.get("ws")
-                    if tts_ws is None:
-                        call_log.warning("tts_ws_gone_before_stream")
-                        continue
-
                     assistant_response = ""
                     stream = stream_llm(
                         query=user_text,
@@ -195,10 +195,11 @@ async def handle_transcripts(
                         buffer += chunk
                         await send_text(connection=tts_ws, text=chunk)
                         if not first_flush_done:
-                            await flush_stream(tts_ws)
-                            first_flush_done = True
-                            buffer = ""
-                        elif len(buffer) > 120:
+                            if len(buffer) >= 15 or any(p in buffer for p in ".,!?\n"):
+                                await flush_stream(tts_ws)
+                                first_flush_done = True
+                                buffer = ""
+                        elif len(buffer) > 60 or any(p in buffer for p in ".!?"):
                             await flush_stream(tts_ws)
                             buffer = ""
 
@@ -227,3 +228,5 @@ async def handle_transcripts(
         except Exception as e:
             call_log.error("transcript_loop_error", error=str(e))
             continue
+
+

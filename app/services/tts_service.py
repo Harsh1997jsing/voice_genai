@@ -35,7 +35,7 @@ ELEVENLABS_WS_URL = (
 # Connection
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def open_elevenlabs_stream(system_prompt: dict = ""):
+async def open_elevenlabs_stream(system_prompt: str | dict | None = ""):
     """
     Open a streaming TTS WebSocket connection and send the BOS (begin-of-stream)
     initialisation frame.
@@ -50,8 +50,13 @@ async def open_elevenlabs_stream(system_prompt: dict = ""):
         ping_interval=None,
         ping_timeout=None,
     )
-    system_prompt = system_prompt['text']
-    print(f"Opened ElevenLabs TTS stream with system prompt: {system_prompt}...")
+    if isinstance(system_prompt, dict):
+        system_prompt = str(system_prompt.get("text", "")).strip()
+    elif system_prompt is None:
+        system_prompt = ""
+    else:
+        system_prompt = str(system_prompt).strip()
+    log.info("tts_stream_prompt_loaded", has_prompt=bool(system_prompt))
 
     bos_text = f"{system_prompt.strip()} " if system_prompt.strip() else " "
 
@@ -64,7 +69,7 @@ async def open_elevenlabs_stream(system_prompt: dict = ""):
             "use_speaker_boost": False,
         },
         "generation_config": {
-            "chunk_length_schedule": [50],
+            "chunk_length_schedule": [50, 120, 200],
         },
     }))
 
